@@ -18,24 +18,23 @@
 from flash_kinetis import Flash_Kinetis
 
 flash_algo = { 
-    'load_address' : {{entry}},
     'instructions' : [
-    {{prog_header}}
-    {{mem}}
+    {{algo['data']}}
     ],
     
-    'pc_init' : {{func['Init']}},
-    'pc_unInit': {{func['UnInit']}},
-    'pc_program_page': {{func['ProgramPage']}},
-    'pc_erase_sector': {{func['EraseSector']}},
-    'pc_eraseAll' : {{func['EraseChip']}},
+    'pc_init' : {{ "0x%x" % func['Init']}},
+    'pc_unInit': {{ "0x%x" %func['UnInit']}},
+    'pc_program_page': {{ "0x%x" % func['ProgramPage']}},
+    'pc_erase_sector': {{"0x%x" % func['EraseSector']}},
+    'pc_eraseAll' : {{"0x%x" % func['EraseChip']}},
 
-    'static_base' : {{entry}} + {{header_size}} + {{static_base}},
-    'begin_stack' : {{entry}} + 0x00000800,            
-    'begin_data' : {{entry}} + 0x00000A00,
-    'page_size' : {{prog_page_size}},
-    'analyzer_supported' : False,
-    'analyzer_address' : 0x00000000  # ITCM, Analyzer 0x00000000..0x000000600
+    'static_base' : {{"0x%x" % algo['static_base']}},
+    'ro_start' : {{"0x%x" % algo['ro_start']}},
+    'ro_size' : {{"0x%x" % algo['ro_size']}},
+    'rw_start' : {{"0x%x" % algo['rw_start']}},
+    'rw_size' : {{"0x%x" % algo['rw_size']}},
+    'zi_start' : {{"0x%x" % algo['zi_start']}},
+    'zi_size' : {{"0x%x" % algo['zi_size']}},
 };
               
 class Flash_{{name}}(Flash_Kinetis): 

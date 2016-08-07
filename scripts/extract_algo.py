@@ -4,6 +4,9 @@ import sys
 from elftools.common.py3compat import bytes2str
 from elftools.elf.elffile import ELFFile
 from elftools.elf.sections import SymbolTableSection
+from jinja2 import Template, StrictUndefined
+from struct import unpack
+import copy
 
 DEVICE_INFO = "FlashDevice"
 
@@ -33,47 +36,44 @@ REQUIRED_DESCRIPTOR_SECTIONS = set([
     ])
 
 
-class FlashAlgo(object):
-
-    def __init__(self):
-        self.algo_data = None
-        self.ro_start = None
-        self.ro_size = None
-        self.rw_start = None
-        self.rw_size = None
-        self.zi_start = None
-        self.zi_size = None
-
-
 # x-Get symbol table
-# -Get all allocatable sections - should be "PrgCode", "PrgData" and "DevDscr"
+# x-Get all allocatable sections - should be "PrgCode", "PrgData" and "DevDscr"
 # -Get sections PrgCode and PrgData
-# -Extract data
-# -Build output data - RO, RW, ZI regions
+# x-Extract data
+# x-Build output data - RO, RW, ZI regions
 # -Build target output - 
 
 
 def main():
-    ELF_FILE = "MK_P1M0.FLM"
+    TEMPLATE_PATH = "py_blob.tmpl"
+    ELF_FILE = "mk64f12.axf"
     with open(ELF_FILE, 'rb') as file_handle:
         elffile = ELFFile(file_handle)
         symbols = get_required_symbols(elffile)
         flash_algo = get_flash_algo(elffile)
-        flash_info = get_flash_info(elffile)
+        #flash_info = get_flash_info(elffile)
 
-        output = {}
-        for symbol in REQUIRED_SYMBOLS:
-            output[symbol] = symbols[symbol]
-        output["ro_start"] = flash_algo.ro_start
-        output["ro_size"] = flash_algo.ro_size
-        output["rw_start"] = flash_algo.rw_start
-        output["rw_size"] = flash_algo.rw_size
-        output["zi_start"] = flash_algo.zi_start
-        output["zi_size"] = flash_algo.zi_size
-        output["algo_bytes"] = list(flash_algo.algo_data)
+    WORDS_PER_LINE = 6
+    algo_data = flash_algo["data"]
+    algo_words = unpack(str(len(algo_data) // 4) + "I", algo_data)
+    algo_string = ""
+    for i in range(len(algo_words)):
+        algo_string += "0x%08x" % algo_words[i] + ", "
+        if ((i + 1) % WORDS_PER_LINE) == 0:
+            algo_string += "\n    "
+
+    dic = {}
+    dic["func"] = copy.deepcopy(symbols)
+    dic["algo"] = copy.deepcopy(flash_algo)
+    dic["algo"]["data"] = algo_string
+
+    template_path = TEMPLATE_PATH
+    template_text = open(template_path).read()
+    template = Template(template_text)
+    target_text = template.render(dic)
 
     with open("output.txt", "wb") as file_handle:
-        file_handle.write(str(output))
+        file_handle.write(target_text)
 
 
 def get_required_symbols(elffile):
@@ -107,16 +107,22 @@ def get_required_symbols(elffile):
 
 
 def get_flash_algo(elffile):
+    RO_SECTION_INDEX = 1
+    RW_SECTION_INDEX = 2
+    ZI_SECTION_INDEX = 3
+    STATIC_BASE_SYMBOL_NAME = "$d.realdata"
     ro_section = None
     rw_section = None
     zi_section = None
 
     # Find requried sections
-    for section in elffile.iter_sections():
+    for index, section in enumerate(elffile.iter_sections()):
         if bytes2str(section.name) == "PrgCode":
             if section['sh_type'] == "SHT_PROGBITS":
                 if ro_section is None:
                     ro_section = section
+                elif index != RO_SECTION_INDEX:
+                    print("Wrong ro section number")
                 else:
                     print("Extra ro section")
             else:
@@ -125,11 +131,15 @@ def get_flash_algo(elffile):
             if section['sh_type'] == "SHT_PROGBITS":
                 if rw_section is None:
                     rw_section = section
+                elif index != RW_SECTION_INDEX:
+                    print("Wrong rw section number")
                 else:
                     print("Extra rw section")
             elif section['sh_type'] == "SHT_NOBITS":
                 if zi_section is None:
                     zi_section = section
+                elif index != ZI_SECTION_INDEX:
+                    print("Wrong zi section number")
                 else:
                     print("Extra zi section")
             else:
@@ -146,35 +156,55 @@ def get_flash_algo(elffile):
         print("Missing zi section")
         return None
 
+    # Grab PrgData static base
+    section = elffile.get_section_by_name(b'.symtab')
+    if not section:
+        print("Missing symbol table")
+        return None
+    if not isinstance(section, SymbolTableSection):
+        print("Invalid symbol table section")
+        return None
+    static_base = None
+    for symbol in section.iter_symbols():
+        name_str = bytes2str(symbol.name)
+        if ((name_str == STATIC_BASE_SYMBOL_NAME) and
+                (symbol['st_shndx'] == RW_SECTION_INDEX)):
+            if static_base is not None:
+                print("Duplicate static base symbols")
+                return None
+            static_base = symbol['st_value']
+
     # Build the algo
-    algo = FlashAlgo()
-    algo.ro_start = ro_section['sh_addr']
-    algo.ro_size = ro_section['sh_size']
-    algo.rw_start = rw_section['sh_addr']
-    algo.rw_size = rw_section['sh_size']
-    algo.zi_start = zi_section['sh_addr']
-    algo.zi_size = zi_section['sh_size']
+    algo = {}
+    algo["static_base"] = static_base
+    algo["ro_start"] = ro_section['sh_addr']
+    algo["ro_size"] = ro_section['sh_size']
+    algo["rw_start"] = rw_section['sh_addr']
+    algo["rw_size"] = rw_section['sh_size']
+    algo["zi_start"] = zi_section['sh_addr']
+    algo["zi_size"] = zi_section['sh_size']
 
     # Check section ordering
-    if algo.ro_start != 0:
+    if algo["ro_start"] != 0:
         print("RO section does not start at address 0")
         return None
-    if algo.ro_start + algo.ro_size != algo.rw_start:
+    if algo["ro_start"] + algo["ro_size"] != algo["rw_start"]:
         print("RW section does not follow RO section")
         return None
-    if algo.rw_start + algo.rw_size != algo.zi_start:
+    if algo["rw_start"] + algo["rw_size"] != algo["zi_start"]:
         print("ZI section does not follow RW section")
         return None
 
     # Attach data to the flash algo
-    algo_size = algo.rw_start + algo.rw_size + algo.zi_size
+    algo_size = algo["rw_start"] + algo["rw_size"] + algo["zi_size"]
     algo_data = bytearray(algo_size)
     ro_data = ro_section.data()
-    algo_data[algo.ro_start:algo.ro_start + algo.ro_size] = ro_data
+    algo_data[algo["ro_start"]:algo["ro_start"] + algo["ro_size"]] = ro_data
     rw_data = rw_section.data()
-    algo_data[algo.rw_start:algo.rw_start + algo.rw_size] = rw_data
+    algo_data[algo["rw_start"]:algo["rw_start"] + algo["rw_size"]] = rw_data
     # ZI is already zeroed
-    algo.algo_data = algo_data
+
+    algo['data'] = algo_data
 
     return algo
 
